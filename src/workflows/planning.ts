@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import { z } from 'zod';
-
 import { WORKFLOW_LIMITS } from './config';
 import type { ExpansionEnvelope } from './graph';
 import { type CompiledWorkflow, compileWorkflow } from './graph';
+import type { DeepInterviewSpecManifest } from './interview-manifest';
+import { type CriticResult, parseCriticResult } from './planning-critic';
 import {
   type PlanningBudget,
   type PlanningTransport,
@@ -28,6 +28,7 @@ export type RalplanInput = {
   readonly parentSessionID: string;
   readonly specText: string;
   readonly specSha256: string;
+  readonly specManifest?: DeepInterviewSpecManifest;
   readonly source: 'deep-interview' | 'user-spec';
   readonly baseCommit: string;
   readonly plannerProfile: WorkflowRoleProfile;
@@ -41,11 +42,7 @@ export type RalplanInput = {
   readonly now?: () => number;
 };
 
-export type CriticResult = {
-  readonly verdict: 'accept' | 'revise' | 'blocked';
-  readonly findings: readonly string[];
-  readonly artifactDigest: string;
-};
+export type { CriticResult } from './planning-critic';
 
 type PlanBinding = {
   readonly specSha256: string;
@@ -65,14 +62,6 @@ export type RalplanResult = {
   readonly approvalDigest: string;
   readonly binding: PlanBinding;
 };
-
-const CriticResultSchema = z
-  .object({
-    verdict: z.enum(['accept', 'revise', 'blocked']),
-    findings: z.array(z.string().trim().min(1)),
-    artifactDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-  })
-  .strict();
 
 export class PlanningError extends Error {
   readonly name = 'PlanningError';
@@ -144,10 +133,24 @@ function assertInput(input: RalplanInput): void {
     throw new PlanningError('spec_changed', 'finalized spec bytes changed');
   }
   if (
+    input.source === 'deep-interview' &&
+    (input.specManifest === undefined ||
+      input.specManifest.specSha256 !== input.specSha256 ||
+      input.specManifest.specBytes !==
+        Buffer.byteLength(input.specText, 'utf8'))
+  ) {
+    throw new PlanningError(
+      'spec_changed',
+      'finalized interview manifest does not match spec bytes',
+    );
+  }
+  if (
     input.plannerProfile.role !== 'planner' ||
     input.criticProfile.role !== 'critic' ||
     input.plannerProfile.digest === input.criticProfile.digest ||
-    input.plannerProfile.agent === input.criticProfile.agent
+    input.plannerProfile.agent === input.criticProfile.agent ||
+    input.plannerProfile.model.providerID ===
+      input.criticProfile.model.providerID
   ) {
     throw new PlanningError(
       'independence_required',
@@ -211,7 +214,7 @@ export async function runRalplan(input: RalplanInput): Promise<RalplanResult> {
         }),
       ),
     );
-    const review = CriticResultSchema.parse(JSON.parse(criticOutput));
+    const review = parseCriticResult(criticOutput);
     if (review.artifactDigest !== compiled.definitionDigest) {
       throw new PlanningError(
         'critic_artifact_mismatch',
