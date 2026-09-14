@@ -5,7 +5,6 @@ import type { ExpansionEnvelope } from './graph';
 import { type CompiledWorkflow, compileWorkflow } from './graph';
 import type { DeepInterviewSpecManifest } from './interview-manifest';
 import {
-  extractJsonPayload,
   type CriticResult,
   parseCriticResult,
   parseJsonPayload,
@@ -202,9 +201,7 @@ export async function runRalplan(input: RalplanInput): Promise<RalplanResult> {
       ),
     );
     const compiled = compileWorkflow(
-      parseJsonPayload(plannerOutput) as Parameters<
-        typeof compileWorkflow
-      >[0],
+      parseJsonPayload(plannerOutput) as Parameters<typeof compileWorkflow>[0],
       input.expansionEnvelope,
     );
     if (compiled.definition.planId !== input.planId) {

@@ -7,6 +7,7 @@ import {
   type NativeDispatchResult,
   type NativeSessionPort,
   type NativeSessionRequest,
+  RuntimeAdapterError,
   readString,
   type SessionPortOptions,
   UnattendedRuntimeUnsupportedError,
@@ -34,6 +35,50 @@ export interface V1SessionPortOptions extends SessionPortOptions {
   readonly waitForIdle?: (
     sessionID: string,
   ) => Promise<'terminal' | 'pending' | 'uncertain'>;
+  /**
+   * Bound for idle observation in `wait()`/`cancel()`. When set, an
+   * unresolved `waitForIdle` (or a stuck abort call) cannot outlive this
+   * deadline: the session is aborted and a `wait_timeout` error naming the
+   * operation is thrown. Unset preserves the legacy unbounded await.
+   */
+  readonly waitTimeoutMs?: number;
+}
+
+const waitTimeoutSentinel = Symbol('v1-wait-timeout');
+
+function isWaitTimeout(error: unknown): boolean {
+  return error === waitTimeoutSentinel;
+}
+
+function waitTimeoutError(
+  operationId: string,
+  timeoutMs: number,
+): RuntimeAdapterError {
+  return new RuntimeAdapterError(
+    'wait_timeout',
+    operationId,
+    `workflow ${operationId} session wait timed out after ${timeoutMs}ms; session aborted`,
+  );
+}
+
+async function withWaitTimeout<T>(
+  task: Promise<T>,
+  timeoutMs: number | undefined,
+): Promise<T> {
+  if (timeoutMs === undefined) return task;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(waitTimeoutSentinel);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 type OperationRecord = {
@@ -278,10 +323,31 @@ export function createV1SessionPort(
     return aggregateUsage(responseItems(response));
   }
 
+  async function abortSession(sessionID: string): Promise<void> {
+    if (!session?.abort) return;
+    try {
+      await withWaitTimeout(
+        session.abort({ path: { id: sessionID } }),
+        options.waitTimeoutMs,
+      );
+    } catch {
+      // Best-effort: the timeout error below already reports the outcome.
+    }
+  }
+
   async function wait(operationId: string) {
     const sessionID = operations.get(operationId)?.sessionID;
     if (!sessionID || !options.waitForIdle) return 'uncertain' as const;
-    return options.waitForIdle(sessionID);
+    const timeoutMs = options.waitTimeoutMs;
+    try {
+      return await withWaitTimeout(options.waitForIdle(sessionID), timeoutMs);
+    } catch (error) {
+      if (timeoutMs !== undefined && isWaitTimeout(error)) {
+        await abortSession(sessionID);
+        throw waitTimeoutError(operationId, timeoutMs);
+      }
+      throw error;
+    }
   }
 
   async function cancel(operationId: string) {
@@ -289,13 +355,23 @@ export function createV1SessionPort(
     if (!sessionID || !session?.abort || !options.waitForIdle) {
       return 'unsupported' as const;
     }
+    const timeoutMs = options.waitTimeoutMs;
     try {
-      const response = await session.abort({ path: { id: sessionID } });
+      const response = await withWaitTimeout(
+        session.abort({ path: { id: sessionID } }),
+        timeoutMs,
+      );
       if (!isSuccessfulResponse(response)) return 'pending';
-      return (await options.waitForIdle(sessionID)) === 'terminal'
+      return (await withWaitTimeout(
+        options.waitForIdle(sessionID),
+        timeoutMs,
+      )) === 'terminal'
         ? ('cancelled' as const)
         : ('pending' as const);
     } catch (error) {
+      if (timeoutMs !== undefined && isWaitTimeout(error)) {
+        throw waitTimeoutError(operationId, timeoutMs);
+      }
       if (error instanceof Error) return 'pending';
       return 'pending';
     }

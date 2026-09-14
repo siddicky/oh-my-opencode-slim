@@ -27,8 +27,8 @@ export function extractJsonPayload(text: string): string {
   const direct = text.trim();
   if (direct.startsWith('{')) return direct;
   const fence = /```(?:json)?\s*([\s\S]*?)```/m.exec(text);
-  if (fence?.[1] !== undefined && fence[1].trim().startsWith('{')) {
-    return fence[1].trim();
+  if (fence?.[1]?.trim().startsWith('{')) {
+    return fence[1]?.trim() ?? direct;
   }
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -52,11 +52,7 @@ function unwrapEnvelope(value: unknown): unknown {
   const record = value as Record<string, unknown>;
   for (const key of ENVELOPE_KEYS) {
     const inner = record[key];
-    if (
-      inner !== null &&
-      typeof inner === 'object' &&
-      !Array.isArray(inner)
-    ) {
+    if (inner !== null && typeof inner === 'object' && !Array.isArray(inner)) {
       return unwrapEnvelope(inner);
     }
   }

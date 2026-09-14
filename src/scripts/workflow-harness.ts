@@ -104,21 +104,38 @@ async function makeWaitForIdle(
 > {
   const deadline = Date.now() + timeoutMs;
   return async (sessionID) => {
+    const startedAt = Date.now();
+    let iteration = 0;
     for (;;) {
+      iteration += 1;
+      let observed: string;
+      let outcome: 'terminal' | 'waiting' | 'uncertain';
       try {
-      const response = await client.session.status({
-        query: { directory },
-      });
-      const live = (response.data ?? {}) as Record<string, unknown>;
-      const entry = live[sessionID];
-      // The live status map only describes active runners; an absent
-      // session is idle, not unknown.
-      if (entry === undefined) return 'terminal';
-        const type = (entry as { type?: string }).type;
-        if (type === 'idle') return 'terminal';
+        const response = await client.session.status({
+          query: { directory },
+        });
+        const live = (response.data ?? {}) as Record<string, unknown>;
+        const entry = live[sessionID];
+        // The live status map only describes active runners; an absent
+        // session is idle, not unknown.
+        if (entry === undefined) {
+          observed = 'absent';
+          outcome = 'terminal';
+        } else {
+          const type = (entry as { type?: string }).type;
+          observed = type ?? 'unknown';
+          outcome = type === 'idle' ? 'terminal' : 'waiting';
+        }
       } catch {
-        return 'uncertain';
+        observed = 'status-error';
+        outcome = 'uncertain';
       }
+      console.log(
+        `[wait-poll] session ${sessionID} iteration ${iteration} ` +
+          `elapsed ${Date.now() - startedAt}ms state ${observed} ` +
+          `outcome ${outcome}`,
+      );
+      if (outcome !== 'waiting') return outcome;
       if (Date.now() > deadline) return 'uncertain';
       await Bun.sleep(1500);
     }
@@ -224,7 +241,8 @@ async function main(): Promise<void> {
   const args = parseArgs(Bun.argv.slice(2));
   const baseUrl = stringArg(args, 'base-url') ?? 'http://localhost:4096';
   const explicitDirectory = stringArg(args, 'directory');
-  const directory = explicitDirectory ?? (await mkdtemp(join(tmpdir(), 'wf-sandbox-')));
+  const directory =
+    explicitDirectory ?? (await mkdtemp(join(tmpdir(), 'wf-sandbox-')));
   if (!explicitDirectory) console.log('sandbox directory:', directory);
   const client = createOpencodeClient({ baseUrl, directory });
   const timeoutMs = Number(stringArg(args, 'timeout-ms') ?? 600_000);
@@ -243,6 +261,7 @@ async function main(): Promise<void> {
   const waitForIdle = await makeWaitForIdle(client, directory, timeoutMs);
   const port = createV1SessionPort(adaptV1Client(client), {
     waitForIdle,
+    waitTimeoutMs: timeoutMs,
   });
   const probe = await port.probe();
   console.log('port probe:', probe);

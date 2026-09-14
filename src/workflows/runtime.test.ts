@@ -353,3 +353,109 @@ describe('native ambiguous admission and switch failure', () => {
     });
   });
 });
+
+describe('v1 session wait deadline', () => {
+  function dispatchableClient(hooks: {
+    waitForIdle: () => Promise<'terminal' | 'pending' | 'uncertain'>;
+    abort: () => Promise<unknown>;
+  }) {
+    const abort = mock(hooks.abort);
+    const client = {
+      session: {
+        create: mock(async () => ({
+          data: { id: 'ses_deadline' },
+        })),
+        get: mock(async () => ({ data: { id: 'ses_deadline' } })),
+        list: mock(async () => ({ data: [] })),
+        messages: mock(async () => ({
+          data: [
+            {
+              info: {
+                id: `msg_workflow_${request.operationId}:profile`,
+                model: {
+                  providerID: 'approved-provider',
+                  modelID: 'approved-model',
+                },
+              },
+              parts: [],
+            },
+          ],
+        })),
+        prompt: mock(async () => ({ data: {} })),
+        abort,
+      },
+    };
+    return { client, abort, waitForIdle: hooks.waitForIdle };
+  }
+
+  test('a never-resolving waitForIdle aborts and times out naming the operation', async () => {
+    const { client, abort, waitForIdle } = dispatchableClient({
+      waitForIdle: () =>
+        new Promise<'terminal' | 'pending' | 'uncertain'>(() => {}),
+      abort: async () => ({ data: true }),
+    });
+    const port = createV1SessionPort(client, {
+      waitForIdle,
+      waitTimeoutMs: 50,
+    });
+    const dispatch = await port.dispatch(request);
+    expect(dispatch).toEqual({ state: 'prompted', sessionID: 'ses_deadline' });
+
+    const startedAt = Date.now();
+    const error = await port.wait(request.operationId).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(5_000);
+    expect(error).toMatchObject({
+      code: 'wait_timeout',
+      operationId: request.operationId,
+    });
+    expect(String((error as Error | undefined)?.message)).toContain(
+      request.operationId,
+    );
+    expect(abort).toHaveBeenCalled();
+  });
+
+  test('a resolved uncertain outcome still passes through untouched', async () => {
+    const { client, abort, waitForIdle } = dispatchableClient({
+      waitForIdle: async () => 'uncertain' as const,
+      abort: async () => ({ data: true }),
+    });
+    const port = createV1SessionPort(client, {
+      waitForIdle,
+      waitTimeoutMs: 1_000,
+    });
+    await port.dispatch(request);
+
+    expect(await port.wait(request.operationId)).toBe('uncertain');
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  test('a stuck abort call cannot hang cancel past the deadline', async () => {
+    const { client, waitForIdle } = dispatchableClient({
+      waitForIdle: async () => 'terminal' as const,
+      abort: () => new Promise<unknown>(() => {}),
+    });
+    const port = createV1SessionPort(client, {
+      waitForIdle,
+      waitTimeoutMs: 50,
+    });
+    await port.dispatch(request);
+
+    const startedAt = Date.now();
+    const error = await port.cancel(request.operationId).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(elapsedMs).toBeLessThan(5_000);
+    expect(error).toMatchObject({
+      code: 'wait_timeout',
+      operationId: request.operationId,
+    });
+  });
+});

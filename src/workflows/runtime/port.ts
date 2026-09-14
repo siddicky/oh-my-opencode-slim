@@ -4,7 +4,8 @@ export type RuntimeFailureCode =
   | 'unsupported_method'
   | 'rejected_admission'
   | 'ambiguous_response_loss'
-  | 'model_verification_failed';
+  | 'model_verification_failed'
+  | 'wait_timeout';
 
 export class RuntimeAdapterError extends Error {
   override readonly name: string = 'RuntimeAdapterError';

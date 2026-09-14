@@ -489,6 +489,14 @@ describe('plugin TUI agent activity', () => {
       serverUrl: new URL('http://127.0.0.1:4096'),
     } as never);
 
+    // Spinner follows session.status: busy first latches pending hydration,
+    // then chat.message latches the agent and walks the ancestry chain.
+    await chainHooks?.event?.({
+      event: {
+        type: 'session.status',
+        properties: { sessionID: 'grandchild', status: { type: 'busy' } },
+      },
+    } as never);
     try {
       await chainHooks?.['chat.message']?.(
         { sessionID: 'grandchild', agent: 'fixer' } as never,
@@ -534,6 +542,12 @@ describe('plugin TUI agent activity', () => {
       serverUrl: new URL('http://127.0.0.1:4096'),
     } as never);
 
+    await retryHooks?.event?.({
+      event: {
+        type: 'session.status',
+        properties: { sessionID: 'orphan-a', status: { type: 'busy' } },
+      },
+    } as never);
     try {
       await retryHooks?.['chat.message']?.(
         { sessionID: 'orphan-a', agent: 'fixer' } as never,
@@ -578,6 +592,12 @@ describe('plugin TUI agent activity', () => {
       serverUrl: new URL('http://127.0.0.1:4096'),
     } as never);
 
+    await malformedHooks?.event?.({
+      event: {
+        type: 'session.status',
+        properties: { sessionID: 'broken-a', status: { type: 'busy' } },
+      },
+    } as never);
     try {
       await malformedHooks?.['chat.message']?.(
         { sessionID: 'broken-a', agent: 'fixer' } as never,
@@ -599,6 +619,7 @@ describe('plugin TUI agent activity', () => {
     } finally {
       await malformedHooks?.dispose?.();
     }
+  });
   test('chat.message does not light a spinner without session.status busy', async () => {
     await hooks?.['chat.message']?.(
       { sessionID: 'orch', agent: 'orchestrator' } as never,
