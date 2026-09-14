@@ -8,8 +8,8 @@ import type {
 export type PlanningBudget = {
   readonly tokenBudget: number;
   readonly timeBudgetMs: number;
-  readonly knownInputTokens: number;
-  readonly responseAllowanceTokens: number;
+  readonly knownInputTokens?: number;
+  readonly responseAllowanceTokens?: number;
 };
 
 export interface WorkflowOutputReader {
@@ -45,8 +45,8 @@ function assertNever(value: never): never {
 
 function assertBudget(transport: PlanningTransport): void {
   const reserved =
-    transport.budget.knownInputTokens +
-    transport.budget.responseAllowanceTokens;
+    (transport.budget.knownInputTokens ?? 0) +
+    (transport.budget.responseAllowanceTokens ?? 0);
   if (transport.now() > transport.deadlineMs) {
     throw new PlanningTransportError(
       'budget_exhausted',
@@ -116,8 +116,8 @@ export async function runPlanningModelCall(
   const usage = await transport.port.usage(request.operationId);
   transport.spentTokens +=
     usage === 'unavailable'
-      ? transport.budget.knownInputTokens +
-        transport.budget.responseAllowanceTokens
+      ? (transport.budget.knownInputTokens ?? 0) +
+        (transport.budget.responseAllowanceTokens ?? 0)
       : usage.inputTokens + usage.outputTokens + usage.reasoningTokens;
   if (
     transport.spentTokens > transport.budget.tokenBudget ||
