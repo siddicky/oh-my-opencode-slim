@@ -63,6 +63,35 @@ export function parseJsonPayload(text: string): unknown {
   return unwrapEnvelope(JSON.parse(extractJsonPayload(text)));
 }
 
+export function normalizeDefinitionPayload(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.nodes)) return value;
+  return {
+    ...record,
+    nodes: record.nodes.map((node) => {
+      if (
+        node === null ||
+        typeof node !== 'object' ||
+        Array.isArray(node)
+      ) {
+        return node;
+      }
+      const nodeRecord = node as Record<string, unknown>;
+      if (!Array.isArray(nodeRecord.dependsOn)) return node;
+      return {
+        ...nodeRecord,
+        dependsOn: (nodeRecord.dependsOn as unknown[]).filter(
+          (dep): dep is string =>
+            typeof dep === 'string' && dep.trim().length > 0,
+        ),
+      };
+    }),
+  };
+}
+
 export function parseCriticResult(text: string): CriticResult {
   return CriticResultSchema.parse(parseJsonPayload(text));
 }
