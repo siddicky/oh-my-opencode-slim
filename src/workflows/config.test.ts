@@ -99,6 +99,19 @@ describe('workflow configuration', () => {
         ],
       }),
     ).toThrow('overlapping write paths');
+    expect(() =>
+      parseWorkflowDefinition({
+        ...definition,
+        nodes: [
+          { ...validNode, allowedWritePaths: ['src/*.ts'] },
+          {
+            ...validNode,
+            id: 'glob-review',
+            allowedWritePaths: ['src/workflows.ts'],
+          },
+        ],
+      }),
+    ).toThrow('overlapping write paths');
     expect(() => parseCriticReview('{not-json')).toThrow(
       'Critic output must be valid JSON.',
     );

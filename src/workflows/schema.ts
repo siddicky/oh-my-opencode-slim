@@ -54,7 +54,44 @@ function pathPrefix(path: string): string {
   return path.replace(/\/\*\*$/, '').replace(/\/\*$/, '').replace(/\/$/, '');
 }
 
+function isGlob(path: string): boolean {
+  return path.includes('*') || path.includes('?');
+}
+
+function globMatches(pattern: string, path: string): boolean {
+  let expression = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === undefined) {
+      continue;
+    }
+    if (character === '*') {
+      if (pattern[index + 1] === '*') {
+        expression += '.*';
+        index += 1;
+      } else {
+        expression += '[^/]*';
+      }
+      continue;
+    }
+    if (character === '?') {
+      expression += '[^/]';
+      continue;
+    }
+    expression += /[\\^$+?.()|{}\[\]]/.test(character)
+      ? `\\${character}`
+      : character;
+  }
+  return new RegExp(`${expression}$`).test(path);
+}
+
 function pathsOverlap(left: string, right: string): boolean {
+  if (isGlob(left) && !isGlob(right)) {
+    return globMatches(left, right);
+  }
+  if (!isGlob(left) && isGlob(right)) {
+    return globMatches(right, left);
+  }
   const leftPrefix = pathPrefix(left);
   const rightPrefix = pathPrefix(right);
   return (
@@ -166,6 +203,15 @@ export const WorkflowOperationSchema = z
     nodeId: WorkflowNodeIdSchema,
     kind: z.enum(['native-session', 'native-tool']),
     state: z.enum(['intent', 'admitted', 'prompted', 'terminal', 'uncertain']),
+  })
+  .strict();
+
+export const WorkflowRunSchema = z
+  .object({
+    id: WorkflowRunIdSchema,
+    planId: WorkflowPlanIdSchema,
+    budget: WorkflowBudgetSchema,
+    state: z.enum(['pending', 'running', 'paused', 'completed', 'failed']),
   })
   .strict();
 
