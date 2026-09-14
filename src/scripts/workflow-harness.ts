@@ -120,7 +120,9 @@ async function makeWaitForIdle(
         // session is idle, not unknown.
         if (entry === undefined) {
           observed = 'absent';
-          outcome = 'terminal';
+          // A just-prompted session is also absent while its runner
+          // registers; only trust absence after a grace period.
+          outcome = Date.now() - startedAt < 5_000 ? 'waiting' : 'terminal';
         } else {
           const type = (entry as { type?: string }).type;
           observed = type ?? 'unknown';
