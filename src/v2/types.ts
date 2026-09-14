@@ -195,6 +195,21 @@ export interface V2Context {
     ): Promise<V2Registration>;
     /** v2 session.get — SessionInfo by id (runtime-probed). */
     get?(input: { sessionID: string }): Promise<unknown>;
+    /** v2 session.create — creates at the supplied native location. Newer
+     * hosts accept caller IDs and operation metadata; callers probe before
+     * use and only send metadata when that capability is known. */
+    create?(input: {
+      id?: string;
+      parentID?: string;
+      agent?: string;
+      model?: { id: string; providerID: string; variant?: string };
+      location?: {
+        directory: string;
+        workspaceID?: string;
+        project: { id: string; directory: string; canonical: string };
+      };
+      metadata?: Record<string, unknown>;
+    }): Promise<unknown>;
     /** v2 session.remove — DELETE /api/session/:id (runtime-probed). */
     remove?(input: { sessionID: string }): Promise<unknown>;
     /** v2 session.list — query-filtered listing (runtime-probed).
@@ -209,6 +224,8 @@ export interface V2Context {
       sessionID: string;
       continue?: boolean;
     }): Promise<unknown>;
+    /** v2 session.wait — resolves only after the native agent loop is idle. */
+    wait?(input: { sessionID: string }): Promise<unknown>;
     /** v2 session.switchModel — v2 prompts carry no model, so a model
      * change must precede the prompt (runtime-probed). */
     switchModel?(input: {
