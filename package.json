@@ -91,6 +91,7 @@
     "@opencode-ai/sdk": "1.18.23",
     "jsdom": "^29.0.0",
     "lru-cache": "^11.5.2",
+    "quickjs-wasi": "3.6.0",
     "turndown": "^7.2.4"
   },
   "optionalDependencies": {
