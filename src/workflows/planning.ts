@@ -191,6 +191,7 @@ export async function runRalplan(input: RalplanInput): Promise<RalplanResult> {
           'Respond with ONLY raw JSON matching this schema exactly (strict, no extra keys, no omitted required keys):',
           `{"version":1,"planId":${JSON.stringify(input.planId)},"budget":{"tokenBudget":<positive-int>,"timeBudgetMs":<positive-int>},"nodes":[{"id":"<node-id>","dependsOn":["<other-node-id-or-empty>"],"executorRole":"planner|executor|critic|debugger","criticRole":"planner|executor|critic|debugger","allowedWritePaths":["<relative/glob>"],"inputArtifacts":["<artifact>"],"checks":[{"command":"<binary>","args":["<arg>"],"cwd":"<relative-dir>","timeoutMs":<positive-int>}],"acceptanceCriteria":["<criterion>"]}]}]}`,
           'Every node needs at least one check. Paths must be relative (no leading /, no ..).',
+          'Sibling nodes must have pairwise-disjoint allowedWritePaths — the schema rejects overlapping globs between nodes.',
           'No prose, no markdown fences, no tool calls.',
           JSON.stringify({
             kind: repairRounds === 0 ? 'plan' : 'repair',
