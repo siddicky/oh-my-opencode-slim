@@ -145,7 +145,7 @@ export function createV1SessionPort(
         path: { id: sessionID },
         query: { directory: request.workspace.directory },
         body: {
-          messageID: `${request.operationId}:profile`,
+          messageID: `msg_workflow_${request.operationId}:profile`,
           agent: request.profile.agent,
           model,
           noReply: true,
@@ -182,7 +182,10 @@ export function createV1SessionPort(
     const messages = responseItems(messagesResponse);
     const profileMessage = messages.find((item) => {
       const info = isRecord(item.info) ? item.info : undefined;
-      return readString(info ?? {}, 'id') === `${request.operationId}:profile`;
+      return (
+        readString(info ?? {}, 'id') ===
+        `msg_workflow_${request.operationId}:profile`
+      );
     });
     const info =
       profileMessage && isRecord(profileMessage.info)
@@ -211,7 +214,7 @@ export function createV1SessionPort(
         path: { id: sessionID },
         query: { directory: request.workspace.directory },
         body: {
-          messageID: request.operationId,
+          messageID: `msg_workflow_${request.operationId}`,
           agent: request.profile.agent,
           model,
           parts: [{ type: 'text', text: request.prompt }],

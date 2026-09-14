@@ -53,7 +53,7 @@ describe('native profile dispatch', () => {
             data: [
               {
                 info: {
-                  id: 'op_run_node_1:profile',
+                  id: 'msg_workflow_op_run_node_1:profile',
                   role: 'user',
                   model: {
                     providerID: 'approved-provider',
@@ -100,7 +100,7 @@ describe('native profile dispatch', () => {
       path: { id: 'ses_v1' },
       query: { directory: '/tmp/attempt' },
       body: {
-        messageID: 'op_run_node_1:profile',
+        messageID: 'msg_workflow_op_run_node_1:profile',
         agent: 'executor',
         noReply: true,
         model: {
@@ -113,7 +113,7 @@ describe('native profile dispatch', () => {
       path: { id: 'ses_v1' },
       query: { directory: '/tmp/attempt' },
       body: {
-        messageID: 'op_run_node_1',
+        messageID: 'msg_workflow_op_run_node_1',
         agent: 'executor',
         model: {
           providerID: 'approved-provider',

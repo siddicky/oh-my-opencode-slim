@@ -217,7 +217,9 @@ function sdkOutputReader(
 async function main(): Promise<void> {
   const args = parseArgs(Bun.argv.slice(2));
   const baseUrl = stringArg(args, 'base-url') ?? 'http://localhost:4096';
-  const directory = stringArg(args, 'directory') ?? process.cwd();
+  const explicitDirectory = stringArg(args, 'directory');
+  const directory = explicitDirectory ?? (await mkdtemp(join(tmpdir(), 'wf-sandbox-')));
+  if (!explicitDirectory) console.log('sandbox directory:', directory);
   const client = createOpencodeClient({ baseUrl, directory });
 
   const plannerModelRef = required(args, 'planner-model');
@@ -242,21 +244,23 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const plannerAgent = stringArg(args, 'planner-agent') ?? 'plan';
+  const criticAgent = stringArg(args, 'critic-agent') ?? 'oracle';
   const source: WorkflowAgentConfigSource = {
     agents: () => ({
-      harnessPlanner: { model: plannerModelRef },
-      harnessCritic: { model: criticModelRef },
+      [plannerAgent]: { model: plannerModelRef },
+      [criticAgent]: { model: criticModelRef },
     }),
   };
   const plannerProfile = resolveWorkflowRoleProfile(
     'planner',
-    'harnessPlanner',
+    plannerAgent,
     source,
     [],
   );
   const criticProfile = resolveWorkflowRoleProfile(
     'critic',
-    'harnessCritic',
+    criticAgent,
     source,
     [],
   );

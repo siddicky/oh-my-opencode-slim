@@ -4,7 +4,12 @@ import { WORKFLOW_LIMITS } from './config';
 import type { ExpansionEnvelope } from './graph';
 import { type CompiledWorkflow, compileWorkflow } from './graph';
 import type { DeepInterviewSpecManifest } from './interview-manifest';
-import { type CriticResult, parseCriticResult } from './planning-critic';
+import {
+  extractJsonPayload,
+  type CriticResult,
+  parseCriticResult,
+  parseJsonPayload,
+} from './planning-critic';
 import {
   type PlanningBudget,
   type PlanningTransport,
@@ -181,16 +186,25 @@ export async function runRalplan(input: RalplanInput): Promise<RalplanResult> {
         input,
         plannerOperation,
         input.plannerProfile,
-        JSON.stringify({
-          kind: repairRounds === 0 ? 'plan' : 'repair',
-          planId: input.planId,
-          spec: input.specText,
-          findings,
-        }),
+        [
+          'Produce a workflow definition for the request below.',
+          'Respond with ONLY raw JSON matching this schema exactly (strict, no extra keys, no omitted required keys):',
+          `{"version":1,"planId":${JSON.stringify(input.planId)},"budget":{"tokenBudget":<positive-int>,"timeBudgetMs":<positive-int>},"nodes":[{"id":"<node-id>","dependsOn":["<other-node-id-or-empty>"],"executorRole":"planner|executor|critic|debugger","criticRole":"planner|executor|critic|debugger","allowedWritePaths":["<relative/glob>"],"inputArtifacts":["<artifact>"],"checks":[{"command":"<binary>","args":["<arg>"],"cwd":"<relative-dir>","timeoutMs":<positive-int>}],"acceptanceCriteria":["<criterion>"]}]}]}`,
+          'Every node needs at least one check. Paths must be relative (no leading /, no ..).',
+          'No prose, no markdown fences, no tool calls.',
+          JSON.stringify({
+            kind: repairRounds === 0 ? 'plan' : 'repair',
+            planId: input.planId,
+            spec: input.specText,
+            findings,
+          }),
+        ].join('\n'),
       ),
     );
     const compiled = compileWorkflow(
-      JSON.parse(plannerOutput),
+      parseJsonPayload(plannerOutput) as Parameters<
+        typeof compileWorkflow
+      >[0],
       input.expansionEnvelope,
     );
     if (compiled.definition.planId !== input.planId) {
@@ -207,11 +221,17 @@ export async function runRalplan(input: RalplanInput): Promise<RalplanResult> {
         input,
         criticOperation,
         input.criticProfile,
-        JSON.stringify({
-          kind: 'critique',
-          artifactDigest: compiled.definitionDigest,
-          definition: compiled.definition,
-        }),
+        [
+          'Critique the workflow definition below.',
+          'Respond with ONLY raw JSON of shape',
+          '{"verdict":"accept|revise|blocked","findings":["..."],"artifactDigest":"<the given artifactDigest>"}',
+          'No prose, no markdown fences, no tool calls.',
+          JSON.stringify({
+            kind: 'critique',
+            artifactDigest: compiled.definitionDigest,
+            definition: compiled.definition,
+          }),
+        ].join('\n'),
       ),
     );
     const review = parseCriticResult(criticOutput);
