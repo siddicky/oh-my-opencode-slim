@@ -13,7 +13,16 @@ export type ExpansionEnvelope = {
 const ExpansionEnvelopeSchema = z
   .object({
     maxAdditionalNodes: z.number().int().nonnegative(),
-    allowedWritePaths: z.array(z.string().trim().min(1)),
+    allowedWritePaths: z.array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .refine(
+          (path) => !path.startsWith('/') && !path.split('/').includes('..'),
+          'write paths must remain inside the project',
+        ),
+    ),
   })
   .strict();
 
@@ -78,6 +87,7 @@ function renderMarkdown(definition: WorkflowDefinition): string {
       `- Executor: ${node.executorRole}`,
       `- Critic: ${node.criticRole}`,
       `- Write paths: ${paths || 'none'}`,
+      `- Input artifacts: ${node.inputArtifacts.join(', ') || 'none'}`,
       '',
       '### Checks',
       '',
@@ -92,6 +102,8 @@ function renderMarkdown(definition: WorkflowDefinition): string {
     `# Plan ${definition.planId}`,
     '',
     `Version: ${definition.version}`,
+    `Token budget: ${definition.budget.tokenBudget}`,
+    `Time budget (ms): ${definition.budget.timeBudgetMs}`,
     '',
     ...sections,
     '',
