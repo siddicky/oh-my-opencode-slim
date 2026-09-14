@@ -133,6 +133,11 @@ async function makeWaitForIdle(
         } else {
           stablePolls = 0;
         }
+        console.log(
+          `[wait-poll] session ${sessionID} iteration ${stablePolls} ` +
+            `elapsed ${Date.now() - deadline + timeoutMs}ms ` +
+            `assistantChars ${signature} stable ${stablePolls}`,
+        );
         lastSignature = signature;
       } catch {
         return 'uncertain';
