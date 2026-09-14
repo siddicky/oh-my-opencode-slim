@@ -351,7 +351,7 @@ async function main(): Promise<void> {
       allowedWritePaths: ['src/**'],
     },
     budget: {
-      tokenBudget: 400_000,
+      tokenBudget: 1_200_000,
       timeBudgetMs: timeoutMs,
       knownInputTokens: 2_000,
       responseAllowanceTokens: 16_000,
