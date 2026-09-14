@@ -85,12 +85,102 @@ function globMatches(pattern: string, path: string): boolean {
   return new RegExp(`${expression}$`).test(path);
 }
 
+function globTokenLength(pattern: string, index: number): number {
+  return pattern[index] === '*' && pattern[index + 1] === '*' ? 2 : 1;
+}
+
+function globClosure(pattern: string, index: number): readonly number[] {
+  const closure = new Set<number>([index]);
+  const queue = [index];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined || pattern[current] !== '*') {
+      continue;
+    }
+    const next = current + globTokenLength(pattern, current);
+    if (!closure.has(next)) {
+      closure.add(next);
+      queue.push(next);
+    }
+  }
+  return [...closure];
+}
+
+function globTransitions(
+  pattern: string,
+  index: number,
+  character: string,
+): readonly number[] {
+  const token = pattern[index];
+  if (token === '*') {
+    const isGlobStar = globTokenLength(pattern, index) === 2;
+    return isGlobStar || character !== '/' ? [index] : [];
+  }
+  if (token === '?') {
+    return character === '/' ? [] : [index + 1];
+  }
+  return token === character ? [index + 1] : [];
+}
+
+function globPatternsOverlap(left: string, right: string): boolean {
+  const alphabet = new Set(['a', '/']);
+  for (const pattern of [left, right]) {
+    for (let index = 0; index < pattern.length; index += 1) {
+      const character = pattern[index];
+      if (character !== undefined && character !== '*' && character !== '?') {
+        alphabet.add(character);
+      }
+    }
+  }
+
+  const queue: Array<readonly [number, number]> = [[0, 0]];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    const [leftIndex, rightIndex] = current;
+    for (const currentLeft of globClosure(left, leftIndex)) {
+      for (const currentRight of globClosure(right, rightIndex)) {
+        const key = `${currentLeft}:${currentRight}`;
+        if (visited.has(key)) {
+          continue;
+        }
+        visited.add(key);
+        if (currentLeft === left.length && currentRight === right.length) {
+          return true;
+        }
+        for (const character of alphabet) {
+          for (const nextLeft of globTransitions(
+            left,
+            currentLeft,
+            character,
+          )) {
+            for (const nextRight of globTransitions(
+              right,
+              currentRight,
+              character,
+            )) {
+              queue.push([nextLeft, nextRight]);
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function pathsOverlap(left: string, right: string): boolean {
   if (isGlob(left) && !isGlob(right)) {
     return globMatches(left, right);
   }
   if (!isGlob(left) && isGlob(right)) {
     return globMatches(right, left);
+  }
+  if (isGlob(left) && isGlob(right)) {
+    return globPatternsOverlap(left, right);
   }
   const leftPrefix = pathPrefix(left);
   const rightPrefix = pathPrefix(right);
