@@ -108,10 +108,14 @@ export function createV2InterviewBridge(
         });
       }
     },
-    continue: async (sessionID, text) => {
-      // Best-effort switch to the orchestrator agent, then a flat prompt.
+    continue: async (sessionID, text, _model, agent) => {
+      // Best-effort switch to the interviewer agent (default orchestrator),
+      // then a flat prompt.
       try {
-        await methods.switchAgent?.({ sessionID, agent: 'orchestrator' });
+        await methods.switchAgent?.({
+          sessionID,
+          agent: agent ?? 'orchestrator',
+        });
       } catch (err) {
         log('[v2][interview] switchAgent failed (best-effort)', {
           sessionID,

@@ -9,6 +9,8 @@ export interface InterviewSessionRuntime {
     sessionID: string,
     text: string,
     model?: { providerID: string; modelID: string },
+    /** Explicit interviewer agent; hosts default to their own choice. */
+    agent?: string,
   ): Promise<void>;
   rename(sessionID: string, title: string): Promise<void>;
 }
@@ -35,11 +37,11 @@ export function createV1InterviewSessionRuntime(
         },
       });
     },
-    async continue(sessionID, text, model) {
+    async continue(sessionID, text, model, agent) {
       await client.session.promptAsync({
         path: { id: sessionID },
         body: {
-          agent: 'orchestrator',
+          agent: agent ?? 'orchestrator',
           parts: [createInternalAgentTextPart(text)],
           ...(model ? { model } : {}),
         },
