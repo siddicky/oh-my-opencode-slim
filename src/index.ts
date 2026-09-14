@@ -25,6 +25,7 @@ import { RuntimeConfig } from './config/runtime';
 import { applyOrchestratorModelConfig } from './config/strip-orchestrator-model';
 import { HEALTH_CHECK, minimumExpectedToolCount } from './health-check';
 import {
+  createAbsolutePathRescueHook,
   createApplyPatchHook,
   createAutoUpdateCheckerHook,
   createCacheMonitorHook,
@@ -76,9 +77,11 @@ import {
 } from './tools/task-activity';
 import {
   clearTuiAgentActivities,
+  readTuiSnapshot,
   recordTuiAgentActivity,
   recordTuiAgentModel,
   recordTuiAgentModels,
+  recordTuiSessionParent,
 } from './tui-state';
 import {
   BackgroundJobBoard,
@@ -191,6 +194,9 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
   let mcps: ReturnType<typeof createBuiltinMcps>;
   let multiplexerConfig: MultiplexerConfig;
   let multiplexerEnabled: boolean;
+  // Host flavor ('v2' on OpenCode v2 hosts via the client shim, undefined on
+  // v1). Survives the try block so prompt-assembly hooks can use it.
+  let hostFlavor: string | undefined;
   let multiplexerSessionManager: MultiplexerSessionManager;
   let autoUpdateChecker: ReturnType<typeof createAutoUpdateCheckerHook>;
   const sessionMetadata = new SessionMetadataStore({
@@ -203,13 +209,91 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
     },
   });
   const ownedTuiActivitySessions = new Map<string, string>();
+  // Busy/retry arrived before the session's agent was known. chat.message
+  // latches the agent and flushes these so the spinner still starts.
+  const pendingTuiBusySessions = new Set<string>();
   const tuiActivityDirectory = (sessionID: string): string => {
     return sessionMetadata.getDirectory(sessionID) ?? ctx.directory;
   };
+  // Sidebar activity scoping (#1147): every active session and the visible
+  // route session resolve their conversation root against the persistent
+  // sessionParents index at render time. The recorder only persists the
+  // child→parent links; roots are never stored per-activity, so a
+  // late-learned link re-roots everything consistently. Process identity
+  // cannot scope this because v2 daemons are shared across windows.
   const markTuiAgentActive = (sessionID: string, agentName: string): void => {
     const directory = tuiActivityDirectory(sessionID);
     recordTuiAgentActivity({ sessionID, agentName, active: true }, directory);
     ownedTuiActivitySessions.set(sessionID, directory);
+    void hydrateTuiSessionParent(sessionID, directory);
+  };
+  // Sessions that predate this fix or whose session.created event was
+  // missed have no link in the persistent index. Ask the host once per
+  // session and walk up to a confirmed root; absence of parentID on a
+  // valid response is a final answer (top-level chat).
+  const hydratedTuiParents = new Set<string>();
+  const hydrateTuiSessionParent = async (
+    startSessionID: string,
+    directory: string,
+  ): Promise<void> => {
+    const sessionApi = (ctx as { client?: { session?: { get?: unknown } } })
+      .client?.session;
+    if (typeof sessionApi?.get !== 'function') return;
+    const lookup = sessionApi.get as (input: {
+      path: { id: string };
+      query: { directory: string };
+    }) => Promise<{ data?: unknown; error?: unknown; parentID?: unknown }>;
+    const visited = new Set<string>();
+    let current = startSessionID;
+    while (!visited.has(current)) {
+      visited.add(current);
+      const snapshot = readTuiSnapshot(directory);
+      const known = snapshot.sessionParents[current];
+      if (known !== undefined) {
+        current = known; // Persisted link; keep walking toward the root.
+        continue;
+      }
+      if (hydratedTuiParents.has(current)) return;
+      hydratedTuiParents.add(current);
+      let parentID: unknown;
+      try {
+        // Call with the session object as receiver: the SDK's generated
+        // method reads `this._client` (#595 class of regression).
+        const response = await lookup.call(sessionApi, {
+          path: { id: current },
+          query: { directory },
+        });
+        if (response?.error !== undefined) {
+          // HTTP error resolved instead of thrown: release the slot so a
+          // later activity can retry.
+          hydratedTuiParents.delete(current);
+          return;
+        }
+        const info = response?.data;
+        if (info === null || typeof info !== 'object') {
+          // Malformed response outside the host contract: release the
+          // slot rather than caching "confirmed root" on garbage.
+          hydratedTuiParents.delete(current);
+          return;
+        }
+        parentID = (info as { parentID?: unknown }).parentID;
+      } catch {
+        hydratedTuiParents.delete(current);
+        return;
+      }
+      if (typeof parentID === 'string' && parentID !== current) {
+        recordTuiSessionParent(current, parentID, directory);
+        current = parentID;
+        continue;
+      }
+      if (parentID !== undefined && parentID !== null) {
+        // Malformed non-string parent: release the slot so a later
+        // activity can retry instead of caching a false confirmed root.
+        hydratedTuiParents.delete(current);
+      }
+      // Valid response without a parent: confirmed root, stop.
+      return;
+    }
   };
   const markTuiAgentInactive = (sessionID: string): void => {
     const directory =
@@ -241,6 +325,7 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
   let postFileToolNudge: ReturnType<typeof createPostFileToolNudgeHook>;
   let applyPatch: ReturnType<typeof createApplyPatchHook>;
   let searchPathGuard: ReturnType<typeof createSearchPathGuardHook>;
+  let absolutePathRescue: ReturnType<typeof createAbsolutePathRescueHook>;
   let jsonErrorRecovery: ReturnType<typeof createJsonErrorRecoveryHook>;
   let toolLoopGuard: ToolLoopGuardHook;
   let postFileToolNudgeAfter: (i: unknown, o: unknown) => Promise<void>;
@@ -317,14 +402,22 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
 
     runtime = RuntimeConfig.get(ctx.directory);
     rewriteDisplayNameMentions = createDisplayNameMentionRewriter(runtime);
-    agentDefs = createAgents(runtime, { projectDirectory: ctx.directory });
-    agents = getAgentConfigs(runtime, { projectDirectory: ctx.directory });
+    // Host flavor marker ('v2' on OpenCode v2 hosts, set by the v2 client
+    // shim; absent on v1). Threads the native delegation vocabulary into
+    // prompt assembly so v2 prompts say subagent(...)/agent directly.
+    hostFlavor = (ctx as Parameters<Plugin>[0] & { hostFlavor?: string })
+      .hostFlavor;
+    agentDefs = createAgents(runtime, {
+      projectDirectory: ctx.directory,
+      hostFlavor,
+    });
+    agents = getAgentConfigs(runtime, {
+      projectDirectory: ctx.directory,
+      hostFlavor,
+    });
 
     // Parse multiplexer config with defaults
     multiplexerConfig = runtime.multiplexer;
-
-    const hostFlavor = (ctx as Parameters<Plugin>[0] & { hostFlavor?: string })
-      .hostFlavor;
 
     multiplexerEnabled = shouldEnableMultiplexer({
       hostFlavor,
@@ -595,6 +688,8 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
     applyPatch = createApplyPatchHook(ctx);
 
     searchPathGuard = createSearchPathGuardHook(ctx);
+
+    absolutePathRescue = createAbsolutePathRescueHook(ctx);
 
     jsonErrorRecovery = createJsonErrorRecoveryHook(ctx);
     toolLoopGuard = createToolLoopGuardHook();
@@ -1159,13 +1254,17 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
           sessionMetadata.markOrchestratorActive(eventSessionID);
           const agentName = sessionMetadata.getAgent(eventSessionID);
           if (agentName) {
+            pendingTuiBusySessions.delete(eventSessionID);
             markTuiAgentActive(eventSessionID, agentName);
+          } else {
+            pendingTuiBusySessions.add(eventSessionID);
           }
         } else if (
           event.type === 'session.idle' ||
           (event.type === 'session.status' && statusType === 'idle') ||
           event.type === 'session.deleted'
         ) {
+          pendingTuiBusySessions.delete(eventSessionID);
           sessionMetadata.markOrchestratorIdle(eventSessionID);
           markTuiAgentInactive(eventSessionID);
         }
@@ -1216,6 +1315,18 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       if (event.type === 'session.created') {
         const createdSessionId = event.properties?.info?.id;
         const createdSessionDir = event.properties?.info?.directory;
+        const createdSessionParent = (
+          event.properties as { info?: { parentID?: unknown } } | undefined
+        )?.info?.parentID;
+        if (createdSessionId && typeof createdSessionParent === 'string') {
+          // Persist the child→parent link so any process can resolve the
+          // conversation root, surviving restarts and revives (#1147).
+          recordTuiSessionParent(
+            createdSessionId,
+            createdSessionParent,
+            createdSessionDir ?? ctx.directory,
+          );
+        }
         if (createdSessionId && createdSessionDir) {
           sessionMetadata.setDirectory(createdSessionId, createdSessionDir);
         }
@@ -1334,6 +1445,13 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
 
     'tool.execute.before': async (input, output) => {
       await applyPatch['tool.execute.before'](input as never, output as never);
+      // Rewrite guessed non-existing absolute paths BEFORE the search
+      // guard: the guard blocks grep/glob on missing paths, so running
+      // the rescue after it would never see a rescuable path (#1143).
+      await absolutePathRescue['tool.execute.before'](
+        input as never,
+        output as never,
+      );
       await searchPathGuard['tool.execute.before'](
         input as never,
         output as never,
@@ -1438,10 +1556,18 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
       if (agent) {
         foregroundFallback.registerSessionAgent(input.sessionID, agent);
         sessionMetadata.setAgent(input.sessionID, agent);
-        markTuiAgentActive(input.sessionID, agent);
-        // A chat message means this session is actively working. This also
-        // covers the race where session.status busy fires before the
-        // session's agent is known.
+        // Spinner follows session.status, not chat.message: v2 context
+        // hooks re-deliver chat.message after idle and would otherwise
+        // relight a finished row (and the parent of a background child).
+        // An already-active session (busy under a stale/unknown agent)
+        // refreshes the association so the row follows the real agent.
+        if (
+          pendingTuiBusySessions.has(input.sessionID) ||
+          ownedTuiActivitySessions.has(input.sessionID)
+        ) {
+          pendingTuiBusySessions.delete(input.sessionID);
+          markTuiAgentActive(input.sessionID, agent);
+        }
         companionManager.onSessionStatus({
           sessionId: input.sessionID,
           agent,
@@ -1506,7 +1632,13 @@ export const OhMyOpenCodeLite: Plugin = async (ctx) => {
           const orchestratorPrompt =
             typeof orchestratorDef?.config?.prompt === 'string'
               ? orchestratorDef.config.prompt
-              : buildOrchestratorPrompt(runtime.disabledAgents);
+              : buildOrchestratorPrompt(
+                  runtime.disabledAgents,
+                  undefined,
+                  true,
+                  true,
+                  hostFlavor,
+                );
           output.system[0] = `${output.system[0] || ''}\n\n${orchestratorPrompt}`;
         }
       }
