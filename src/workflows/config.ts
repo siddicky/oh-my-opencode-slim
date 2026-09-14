@@ -19,7 +19,7 @@ export const DEFAULT_WORKFLOW_ROLES = {
 export const WORKFLOW_LIMITS = {
   maxActiveNodeAttempts: 4,
   maxActiveModelCallsPerProvider: 2,
-  maxRepairRounds: 3,
+  maxRepairRounds: 6,
   maxTransportRetries: 2,
 };
 
