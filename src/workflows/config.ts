@@ -33,16 +33,20 @@ export const WorkflowRolesConfigSchema = z
   })
   .strict();
 
+function defaultWorkflowRoles() {
+  return { ...DEFAULT_WORKFLOW_ROLES };
+}
+
 export const WorkflowsConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    roles: WorkflowRolesConfigSchema.default(DEFAULT_WORKFLOW_ROLES),
+    roles: WorkflowRolesConfigSchema.default(defaultWorkflowRoles),
   })
   .strict()
-  .default({
+  .default(() => ({
     enabled: false,
-    roles: DEFAULT_WORKFLOW_ROLES,
-  });
+    roles: defaultWorkflowRoles(),
+  }));
 
 export type WorkflowsConfig = z.infer<typeof WorkflowsConfigSchema>;
 
