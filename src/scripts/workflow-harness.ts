@@ -104,42 +104,41 @@ async function makeWaitForIdle(
 > {
   const deadline = Date.now() + timeoutMs;
   return async (sessionID) => {
-    const startedAt = Date.now();
-    let iteration = 0;
+    // The directory status map cannot see sessions created under the
+    // sandbox directory (no git project root); poll the session's own
+    // transcript and wait for stable assistant output instead.
+    let lastSignature = 0;
+    let stablePolls = 0;
     for (;;) {
-      iteration += 1;
-      let observed: string;
-      let outcome: 'terminal' | 'waiting' | 'uncertain';
       try {
-        const response = await client.session.status({
+        const response = await client.session.messages({
+          path: { id: sessionID },
           query: { directory },
         });
-        const live = (response.data ?? {}) as Record<string, unknown>;
-        const entry = live[sessionID];
-        // The live status map only describes active runners; an absent
-        // session is idle, not unknown.
-        if (entry === undefined) {
-          observed = 'absent';
-          // A just-prompted session is also absent while its runner
-          // registers; only trust absence after a grace period.
-          outcome = Date.now() - startedAt < 5_000 ? 'waiting' : 'terminal';
+        const messages = (response.data ?? []) as Array<{
+          info?: { role?: string };
+          parts?: Array<{ type: string; text?: string }>;
+        }>;
+        const signature = messages
+          .filter((message) => message.info?.role === 'assistant')
+          .map((message) =>
+            (message.parts ?? [])
+              .map((part) => part.text ?? '')
+              .join(''),
+          )
+          .join('').length;
+        if (signature > 0 && signature === lastSignature) {
+          stablePolls += 1;
+          if (stablePolls >= 2) return 'terminal';
         } else {
-          const type = (entry as { type?: string }).type;
-          observed = type ?? 'unknown';
-          outcome = type === 'idle' ? 'terminal' : 'waiting';
+          stablePolls = 0;
         }
+        lastSignature = signature;
       } catch {
-        observed = 'status-error';
-        outcome = 'uncertain';
+        return 'uncertain';
       }
-      console.log(
-        `[wait-poll] session ${sessionID} iteration ${iteration} ` +
-          `elapsed ${Date.now() - startedAt}ms state ${observed} ` +
-          `outcome ${outcome}`,
-      );
-      if (outcome !== 'waiting') return outcome;
       if (Date.now() > deadline) return 'uncertain';
-      await Bun.sleep(1500);
+      await Bun.sleep(3000);
     }
   };
 }
