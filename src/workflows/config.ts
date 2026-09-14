@@ -6,7 +6,8 @@ import {
   WorkflowValidationError,
 } from './schema';
 
-export const WORKFLOW_ROLES = WORKFLOW_ROLE_NAMES satisfies readonly WorkflowRole[];
+export const WORKFLOW_ROLES =
+  WORKFLOW_ROLE_NAMES satisfies readonly WorkflowRole[];
 
 export const DEFAULT_WORKFLOW_ROLES = {
   planner: 'oracle',
@@ -57,9 +58,9 @@ function validationError(error: z.ZodError): WorkflowValidationError {
   );
 }
 
-export function parseWorkflowDefinition(input: unknown): z.infer<
-  typeof WorkflowDefinitionSchema
-> {
+export function parseWorkflowDefinition(
+  input: unknown,
+): z.infer<typeof WorkflowDefinitionSchema> {
   const result = WorkflowDefinitionSchema.safeParse(input);
   if (!result.success) {
     throw validationError(result.error);
@@ -67,9 +68,9 @@ export function parseWorkflowDefinition(input: unknown): z.infer<
   return result.data;
 }
 
-export function parseCriticReview(input: string): z.infer<
-  typeof WorkflowReviewSchema
-> {
+export function parseCriticReview(
+  input: string,
+): z.infer<typeof WorkflowReviewSchema> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(input);
