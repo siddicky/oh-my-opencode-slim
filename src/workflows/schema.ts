@@ -10,9 +10,21 @@ const RelativePathSchema = z
     'Expected a relative path without parent-directory traversal.',
   );
 
-export const WorkflowPlanIdSchema = z.string().trim().min(1).brand<'WorkflowPlanId'>();
-export const WorkflowRunIdSchema = z.string().trim().min(1).brand<'WorkflowRunId'>();
-export const WorkflowNodeIdSchema = z.string().trim().min(1).brand<'WorkflowNodeId'>();
+export const WorkflowPlanIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .brand<'WorkflowPlanId'>();
+export const WorkflowRunIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .brand<'WorkflowRunId'>();
+export const WorkflowNodeIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .brand<'WorkflowNodeId'>();
 export const WorkflowOperationIdSchema = z
   .string()
   .trim()
@@ -51,7 +63,10 @@ export const WorkflowNodeSchema = z
   .strict();
 
 function pathPrefix(path: string): string {
-  return path.replace(/\/\*\*$/, '').replace(/\/\*$/, '').replace(/\/$/, '');
+  return path
+    .replace(/\/\*\*$/, '')
+    .replace(/\/\*$/, '')
+    .replace(/\/$/, '');
 }
 
 function isGlob(path: string): boolean {
@@ -78,7 +93,7 @@ function globMatches(pattern: string, path: string): boolean {
       expression += '[^/]';
       continue;
     }
-    expression += /[\\^$+?.()|{}\[\]]/.test(character)
+    expression += /[\\^$+?.()|{}[\]]/.test(character)
       ? `\\${character}`
       : character;
   }
@@ -252,7 +267,11 @@ export const WorkflowDefinitionSchema = z
       }
     }
 
-    for (let leftIndex = 0; leftIndex < definition.nodes.length; leftIndex += 1) {
+    for (
+      let leftIndex = 0;
+      leftIndex < definition.nodes.length;
+      leftIndex += 1
+    ) {
       const left = definition.nodes[leftIndex];
       if (!left) {
         continue;
