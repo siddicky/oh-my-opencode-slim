@@ -59,8 +59,19 @@ function unwrapEnvelope(value: unknown): unknown {
   return value;
 }
 
+// Doubles backslashes that do not introduce a valid JSON escape
+// (e.g. \` inside shell snippets in model findings).
+function repairInvalidEscapes(text: string): string {
+  return text.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+}
+
 export function parseJsonPayload(text: string): unknown {
-  return unwrapEnvelope(JSON.parse(extractJsonPayload(text)));
+  const payload = extractJsonPayload(text);
+  try {
+    return unwrapEnvelope(JSON.parse(payload));
+  } catch {
+    return unwrapEnvelope(JSON.parse(repairInvalidEscapes(payload)));
+  }
 }
 
 export function normalizeDefinitionPayload(value: unknown): unknown {
