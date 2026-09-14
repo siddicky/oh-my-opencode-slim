@@ -5,6 +5,7 @@ import {
 } from './constants';
 import { CouncilConfigSchema } from './council-schema';
 import { ProviderModelIdSchema } from './model-id-schema';
+import { WorkflowsConfigSchema } from '../workflows/config';
 
 export { ProviderModelIdSchema } from './model-id-schema';
 
@@ -529,6 +530,7 @@ export const PluginConfigSchema = z
     companion: CompanionConfigSchema.optional(),
     webfetch: WebfetchConfigSchema.optional(),
     acpAgents: AcpAgentsConfigSchema.optional(),
+    workflows: WorkflowsConfigSchema.optional(),
   })
   .superRefine((value, ctx) => {
     if (value.agents) {
