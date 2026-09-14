@@ -98,11 +98,14 @@ Document the durable workflow runtime in the plugin README.
 async function makeWaitForIdle(
   client: OpencodeClient,
   directory: string,
+  timeoutMs: number,
 ): Promise<
   (sessionID: string) => Promise<'terminal' | 'pending' | 'uncertain'>
 > {
+  const deadline = Date.now() + timeoutMs;
   return async (sessionID) => {
-    try {
+    for (;;) {
+      try {
       const response = await client.session.status({
         query: { directory },
       });
@@ -111,10 +114,13 @@ async function makeWaitForIdle(
       // The live status map only describes active runners; an absent
       // session is idle, not unknown.
       if (entry === undefined) return 'terminal';
-      const type = (entry as { type?: string }).type;
-      return type === 'idle' ? 'terminal' : 'pending';
-    } catch {
-      return 'uncertain';
+        const type = (entry as { type?: string }).type;
+        if (type === 'idle') return 'terminal';
+      } catch {
+        return 'uncertain';
+      }
+      if (Date.now() > deadline) return 'uncertain';
+      await Bun.sleep(1500);
     }
   };
 }
@@ -221,6 +227,7 @@ async function main(): Promise<void> {
   const directory = explicitDirectory ?? (await mkdtemp(join(tmpdir(), 'wf-sandbox-')));
   if (!explicitDirectory) console.log('sandbox directory:', directory);
   const client = createOpencodeClient({ baseUrl, directory });
+  const timeoutMs = Number(stringArg(args, 'timeout-ms') ?? 600_000);
 
   const plannerModelRef = required(args, 'planner-model');
   const criticModelRef = required(args, 'critic-model');
@@ -233,7 +240,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const waitForIdle = await makeWaitForIdle(client, directory);
+  const waitForIdle = await makeWaitForIdle(client, directory, timeoutMs);
   const port = createV1SessionPort(adaptV1Client(client), {
     waitForIdle,
   });
@@ -281,7 +288,6 @@ async function main(): Promise<void> {
 
   const specPath = stringArg(args, 'spec-file');
   const specText = specPath ? await Bun.file(specPath).text() : DEMO_SPEC;
-  const timeoutMs = Number(stringArg(args, 'timeout-ms') ?? 600_000);
 
   let baseCommit = stringArg(args, 'base-commit') ?? '';
   if (baseCommit === '') {
