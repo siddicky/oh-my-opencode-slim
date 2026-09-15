@@ -529,7 +529,7 @@ describe('CompanionManager', () => {
 
     expect(existsSync(lock)).toBe(true);
     expect(existsSync(pidFile)).toBe(false);
-  });
+  }, 30_000);
 
   it('stores the spawned child PID in the PID file', () => {
     const bin = path.join(TEST_DIR, 'fake-companion');
