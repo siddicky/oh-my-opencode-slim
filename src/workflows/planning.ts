@@ -1,0 +1,273 @@
+import { createHash } from 'node:crypto';
+
+import { WORKFLOW_LIMITS } from './config';
+import type { ExpansionEnvelope } from './graph';
+import { type CompiledWorkflow, compileWorkflow } from './graph';
+import type { DeepInterviewSpecManifest } from './interview-manifest';
+import {
+  type CriticResult,
+  normalizeDefinitionPayload,
+  parseCriticResult,
+  parseJsonPayload,
+} from './planning-critic';
+import {
+  type PlanningBudget,
+  type PlanningTransport,
+  runPlanningModelCall,
+  type WorkflowOutputReader,
+} from './planning-transport';
+import { canonicalDigest, type WorkflowRoleProfile } from './profiles';
+import type {
+  NativeSessionPort,
+  NativeSessionRequest,
+  NativeWorkspaceIdentity,
+} from './runtime/port';
+
+export type {
+  PlanningBudget,
+  WorkflowOutputReader,
+} from './planning-transport';
+
+export type RalplanInput = {
+  readonly planId: string;
+  readonly parentSessionID: string;
+  readonly specText: string;
+  readonly specSha256: string;
+  readonly specManifest?: DeepInterviewSpecManifest;
+  readonly source: 'deep-interview' | 'user-spec';
+  readonly baseCommit: string;
+  readonly plannerProfile: WorkflowRoleProfile;
+  readonly criticProfile: WorkflowRoleProfile;
+  readonly capabilityDigest: string;
+  readonly workspace: NativeWorkspaceIdentity;
+  readonly expansionEnvelope: ExpansionEnvelope;
+  readonly budget: PlanningBudget;
+  readonly port: NativeSessionPort;
+  readonly outputReader: WorkflowOutputReader;
+  readonly now?: () => number;
+};
+
+export type { CriticResult } from './planning-critic';
+
+type PlanBinding = {
+  readonly specSha256: string;
+  readonly source: RalplanInput['source'];
+  readonly projectRoot: string;
+  readonly baseCommit: string;
+  readonly plannerProfileDigest: string;
+  readonly criticProfileDigest: string;
+  readonly capabilityDigest: string;
+  readonly reviewerAgent: string;
+};
+
+export type RalplanResult = {
+  readonly compiled: CompiledWorkflow;
+  readonly review: CriticResult;
+  readonly repairRounds: number;
+  readonly approvalDigest: string;
+  readonly binding: PlanBinding;
+};
+
+export class PlanningError extends Error {
+  readonly name = 'PlanningError';
+
+  constructor(
+    readonly code:
+      | 'blocked'
+      | 'critic_artifact_mismatch'
+      | 'independence_required'
+      | 'repair_exhausted'
+      | 'spec_changed',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new PlanningError('blocked', `unexpected critic verdict: ${value}`);
+}
+
+function nativeRequest(
+  input: RalplanInput,
+  operationId: string,
+  profile: WorkflowRoleProfile,
+  prompt: string,
+): NativeSessionRequest {
+  return {
+    operationId,
+    parentSessionID: input.parentSessionID,
+    workspace: input.workspace,
+    profile: { agent: profile.agent, model: profile.model },
+    prompt,
+  };
+}
+
+function planBinding(input: RalplanInput): PlanBinding {
+  return {
+    specSha256: input.specSha256,
+    source: input.source,
+    projectRoot: input.workspace.canonical,
+    baseCommit: input.baseCommit,
+    plannerProfileDigest: input.plannerProfile.digest,
+    criticProfileDigest: input.criticProfile.digest,
+    capabilityDigest: input.capabilityDigest,
+    reviewerAgent: input.criticProfile.agent,
+  };
+}
+
+export function computePlanApprovalDigest(
+  plan: Pick<RalplanResult, 'binding' | 'compiled' | 'review'>,
+): string {
+  return canonicalDigest({
+    planId: plan.compiled.definition.planId,
+    definitionDigest: plan.compiled.definitionDigest,
+    policyDigest: plan.compiled.policyDigest,
+    markdownDigest: plan.compiled.markdownDigest,
+    expansionEnvelope: plan.compiled.expansionEnvelope,
+    binding: plan.binding,
+    review: plan.review,
+  });
+}
+
+function assertInput(input: RalplanInput): void {
+  const exactSpecHash = createHash('sha256')
+    .update(Buffer.from(input.specText, 'utf8'))
+    .digest('hex');
+  if (exactSpecHash !== input.specSha256) {
+    throw new PlanningError('spec_changed', 'finalized spec bytes changed');
+  }
+  if (
+    input.source === 'deep-interview' &&
+    (input.specManifest === undefined ||
+      input.specManifest.specSha256 !== input.specSha256 ||
+      input.specManifest.specBytes !==
+        Buffer.byteLength(input.specText, 'utf8'))
+  ) {
+    throw new PlanningError(
+      'spec_changed',
+      'finalized interview manifest does not match spec bytes',
+    );
+  }
+  if (
+    input.plannerProfile.role !== 'planner' ||
+    input.criticProfile.role !== 'critic' ||
+    input.plannerProfile.digest === input.criticProfile.digest ||
+    input.plannerProfile.agent === input.criticProfile.agent ||
+    input.plannerProfile.model.providerID ===
+      input.criticProfile.model.providerID
+  ) {
+    throw new PlanningError(
+      'independence_required',
+      'planner and critic must use independent native profiles',
+    );
+  }
+}
+
+export async function runRalplan(input: RalplanInput): Promise<RalplanResult> {
+  assertInput(input);
+  const now = input.now ?? Date.now;
+  const transport: PlanningTransport = {
+    port: input.port,
+    outputReader: input.outputReader,
+    budget: input.budget,
+    now,
+    deadlineMs: now() + input.budget.timeBudgetMs,
+    spentTokens: 0,
+  };
+  let repairRounds = 0;
+  let findings: readonly string[] = [];
+
+  while (true) {
+    const plannerOperation = `${input.planId}:planner:${repairRounds}`;
+    const plannerOutput = await runPlanningModelCall(
+      transport,
+      nativeRequest(
+        input,
+        plannerOperation,
+        input.plannerProfile,
+        [
+          'Produce a workflow definition for the request below.',
+          'Respond with ONLY raw JSON matching this schema exactly (strict, no extra keys, no omitted required keys):',
+          `{"version":1,"planId":${JSON.stringify(input.planId)},"budget":{"tokenBudget":<positive-int>,"timeBudgetMs":<positive-int>},"nodes":[{"id":"<node-id>","dependsOn":["<other-node-id-or-empty>"],"executorRole":"planner|executor|critic|debugger","criticRole":"planner|executor|critic|debugger","allowedWritePaths":["<relative/glob>"],"inputArtifacts":["<artifact>"],"checks":[{"command":"<binary>","args":["<arg>"],"cwd":"<relative-dir>","timeoutMs":<positive-int>}],"acceptanceCriteria":["<criterion>"]}]}]}`,
+          'Every node needs at least one check. Paths must be relative (no leading /, no ..).',
+          'Sibling nodes must have pairwise-disjoint allowedWritePaths — the schema rejects overlapping globs between nodes.',
+          'No prose, no markdown fences, no tool calls.',
+          JSON.stringify({
+            kind: repairRounds === 0 ? 'plan' : 'repair',
+            planId: input.planId,
+            spec: input.specText,
+            findings,
+          }),
+        ].join('\n'),
+      ),
+    );
+    const compiled = compileWorkflow(
+      normalizeDefinitionPayload(
+        parseJsonPayload(plannerOutput),
+      ) as Parameters<typeof compileWorkflow>[0],
+      input.expansionEnvelope,
+    );
+    if (compiled.definition.planId !== input.planId) {
+      throw new PlanningError(
+        'critic_artifact_mismatch',
+        'planner returned a different plan ID',
+      );
+    }
+
+    const criticOperation = `${input.planId}:critic:${repairRounds}`;
+    const criticOutput = await runPlanningModelCall(
+      transport,
+      nativeRequest(
+        input,
+        criticOperation,
+        input.criticProfile,
+        [
+          'Critique the workflow definition below.',
+          'Respond with ONLY raw JSON of shape',
+          '{"verdict":"accept|revise|blocked","findings":["..."],"artifactDigest":"<the given artifactDigest>"}',
+          'No prose, no markdown fences, no tool calls.',
+          JSON.stringify({
+            kind: 'critique',
+            artifactDigest: compiled.definitionDigest,
+            definition: compiled.definition,
+          }),
+        ].join('\n'),
+      ),
+    );
+    const review = parseCriticResult(criticOutput);
+    if (review.artifactDigest !== compiled.definitionDigest) {
+      throw new PlanningError(
+        'critic_artifact_mismatch',
+        'critic reviewed a different plan artifact',
+      );
+    }
+
+    const verdict = review.verdict;
+    switch (verdict) {
+      case 'accept': {
+        const binding = planBinding(input);
+        const accepted = { compiled, review, binding };
+        return {
+          ...accepted,
+          repairRounds,
+          approvalDigest: computePlanApprovalDigest(accepted),
+        };
+      }
+      case 'blocked':
+        throw new PlanningError('blocked', review.findings.join('; '));
+      case 'revise':
+        if (repairRounds >= WORKFLOW_LIMITS.maxRepairRounds) {
+          throw new PlanningError(
+            'repair_exhausted',
+            'planner repair round limit reached',
+          );
+        }
+        findings = review.findings;
+        repairRounds += 1;
+        break;
+      default:
+        return assertNever(verdict);
+    }
+  }
+}

@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { WorkflowsConfigSchema } from '../workflows/config';
 import {
   AGENT_THEME_COLORS,
+  ALL_AGENT_NAMES,
   DEFAULT_MAX_RETAINED_SNAPSHOTS,
 } from './constants';
 import { CouncilConfigSchema } from './council-schema';
@@ -457,6 +459,32 @@ function rejectOrchestratorPromptOnOrchestrator(
   }
 }
 
+function rejectUndeclaredWorkflowRoleTargets(
+  config: {
+    agents?: Record<string, z.infer<typeof AgentOverrideConfigSchema>>;
+    workflows?: z.infer<typeof WorkflowsConfigSchema>;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (!config.workflows) {
+    return;
+  }
+  const declaredAgents = new Set(Object.keys(config.agents ?? {}));
+  for (const [roleName, target] of Object.entries(config.workflows.roles)) {
+    if (
+      (ALL_AGENT_NAMES as readonly string[]).includes(target) ||
+      declaredAgents.has(target)
+    ) {
+      continue;
+    }
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['workflows', 'roles', roleName],
+      message: `Workflow role '${roleName}' targets '${target}', which is neither a built-in agent nor declared in agents`,
+    });
+  }
+}
+
 export const PluginConfigSchema = z
   .object({
     preset: z.string().optional(),
@@ -529,6 +557,7 @@ export const PluginConfigSchema = z
     companion: CompanionConfigSchema.optional(),
     webfetch: WebfetchConfigSchema.optional(),
     acpAgents: AcpAgentsConfigSchema.optional(),
+    workflows: WorkflowsConfigSchema.optional(),
   })
   .superRefine((value, ctx) => {
     if (value.agents) {
@@ -543,6 +572,8 @@ export const PluginConfigSchema = z
         ]);
       }
     }
+
+    rejectUndeclaredWorkflowRoleTargets(value, ctx);
   });
 
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;

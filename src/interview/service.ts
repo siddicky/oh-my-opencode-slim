@@ -128,6 +128,18 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Fired once per finalization round, immediately after a clean final answer
+ * has been persisted to the interview markdown. Consumers (e.g. the
+ * workflows deep interview) use this to publish the spec handoff.
+ */
+export interface InterviewFinalSpecEvent {
+  readonly interviewId: string;
+  readonly sessionID: string;
+  readonly markdownPath: string;
+  readonly document: string;
+}
+
 export function createInterviewService(
   ctx: PluginInput,
   config?: InterviewConfig,
@@ -135,6 +147,11 @@ export function createInterviewService(
     openBrowser?: (url: string) => void;
     env?: NodeJS.ProcessEnv;
     runtime?: InterviewSessionRuntime;
+    /** Explicit interviewer agent for continue prompts (deep interview). */
+    interviewerAgent?: string;
+    onFinalSpecPersisted?: (
+      event: InterviewFinalSpecEvent,
+    ) => void | Promise<void>;
   },
 ): {
   setBaseUrlResolver: (resolver: () => Promise<string>) => void;
@@ -202,6 +219,7 @@ export function createInterviewService(
   let abandonedOrderCounter = 0;
   const finalizationPending = new Set<string>();
   const finalizationReady = new Set<string>();
+  const finalSpecEmitted = new Set<string>();
 
   function setBaseUrlResolver(resolver: () => Promise<string>): void {
     resolveBaseUrl = resolver;
@@ -217,6 +235,22 @@ export function createInterviewService(
     callback: (interview: InterviewRecord) => void,
   ): void {
     onInterviewCreated = callback;
+  }
+
+  async function emitFinalSpec(
+    interview: InterviewRecord,
+    document: string,
+  ): Promise<void> {
+    if (!deps?.onFinalSpecPersisted || finalSpecEmitted.has(interview.id)) {
+      return;
+    }
+    finalSpecEmitted.add(interview.id);
+    await deps.onFinalSpecPersisted({
+      interviewId: interview.id,
+      sessionID: interview.sessionID,
+      markdownPath: interview.markdownPath,
+      document,
+    });
   }
 
   function getActiveInterviewId(sessionID: string): string | null {
@@ -427,12 +461,17 @@ export function createInterviewService(
     const parsed = isCleanFinalResponse
       ? { state: null, latestAssistantError: undefined }
       : findLatestAssistantState(interviewMessages, maxQuestions);
+    // A persisted final answer outranks any earlier <interview_state>
+    // block: post-finalization syncs must never rewrite the document from
+    // stale state (duplicate completion events must not overwrite).
+    const finalized = finalSpecEmitted.has(interview.id);
+    const activeState = finalized ? null : parsed.state;
     const synced = await withInterviewDocumentLock(
       interview.markdownPath,
       async () => {
         const existingDocument = await readInterviewDocument(interview);
         const fallbackState = buildFallbackState(interviewMessages);
-        const state = parsed.state ?? {
+        const state = activeState ?? {
           ...fallbackState,
           summary:
             extractSummarySection(existingDocument) || fallbackState.summary,
@@ -445,7 +484,8 @@ export function createInterviewService(
             latestAssistantText,
           );
           finalizationPending.delete(interview.id);
-        } else if (parsed.state) {
+          await emitFinalSpec(interview, document);
+        } else if (activeState) {
           document = await rewriteInterviewDocument(
             interview,
             state.summary,
@@ -471,7 +511,7 @@ export function createInterviewService(
       mode:
         interview.status === 'abandoned'
           ? 'abandoned'
-          : parsed.state && state.questions.length === 0
+          : activeState && state.questions.length === 0
             ? 'completed'
             : sessionBusy.get(interview.sessionID) === true
               ? 'awaiting-agent'
@@ -485,7 +525,7 @@ export function createInterviewService(
                     // would vanish for a live interview. Keyed on
                     // allMessages, NOT interviewMessages: an empty
                     // post-base slice legitimately awaits the first answer.
-                    !parsed.state &&
+                    !activeState &&
                       allMessages.length > 0 &&
                       sessionBusy.get(interview.sessionID) === false
                     ? 'completed'
@@ -630,6 +670,7 @@ export function createInterviewService(
         interview.sessionID,
         prompt,
         model ? (parseModelReference(model) ?? undefined) : undefined,
+        deps?.interviewerAgent,
       );
       promptSent = true;
     } finally {
@@ -910,6 +951,7 @@ export function createInterviewService(
         interview.sessionID,
         prompt,
         model ? (parseModelReference(model) ?? undefined) : undefined,
+        deps?.interviewerAgent,
       );
       promptSent = true;
     } finally {
@@ -970,6 +1012,7 @@ export function createInterviewService(
         interview.sessionID,
         prompt,
         model ? (parseModelReference(model) ?? undefined) : undefined,
+        deps?.interviewerAgent,
       );
       promptSent = true;
     } finally {
@@ -1042,10 +1085,14 @@ export function createInterviewService(
         finalizationPending.add(interview.id);
         finalizationReady.delete(interview.id);
       }
+      // Both actions are explicit user intent to move past the persisted
+      // final answer; only automatic events are fenced by finalSpecEmitted.
+      finalSpecEmitted.delete(interview.id);
       await sessionRuntime.continue(
         interview.sessionID,
         prompt,
         model ? (parseModelReference(model) ?? undefined) : undefined,
+        deps?.interviewerAgent,
       );
       promptSent = true;
     } finally {
@@ -1053,6 +1100,7 @@ export function createInterviewService(
         if (action === 'confirm-complete') {
           finalizationPending.delete(interview.id);
           finalizationReady.delete(interview.id);
+          finalSpecEmitted.delete(interview.id);
         }
         sessionBusy.set(interview.sessionID, false);
       }

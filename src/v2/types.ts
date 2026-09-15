@@ -117,6 +117,25 @@ export interface V2SessionModelRequestEvent {
   baseURL?: string;
   headers: Record<string, string>;
 }
+/**
+ * v2 `session.compaction` hook payload (v2.0.0+): the host's session
+ * summarization request. Same request shape as the context event plus an
+ * optional host-owned `result`. The plugin bridge only strips its own
+ * tagged synthetic parts from `messages`; `system` is never rewritten
+ * (open host bug: the compaction system prompt may be absent — adding
+ * one would corrupt the request) and `result` is never set.
+ */
+export interface V2SessionCompactionEvent {
+  readonly sessionID: string;
+  readonly model: Record<string, unknown>;
+  system: V2SessionContextEvent['system'];
+  messages: V2SessionContextEvent['messages'];
+  tools: Record<string, unknown>;
+  /** Host compaction options (unread by the bridge). */
+  options?: Record<string, unknown>;
+  /** Host-owned compaction result, present on some firings — read-only. */
+  result?: unknown;
+}
 export interface V2ToolBeforeEvent {
   readonly tool: string;
   readonly sessionID: string;
@@ -193,8 +212,30 @@ export interface V2Context {
       name: 'model.request',
       cb: (event: V2SessionModelRequestEvent) => Promise<void>,
     ): Promise<V2Registration>;
+    /** v2 session.compaction hook (v2.0.0+) — host summarization request
+     * (see V2SessionCompactionEvent). Older v2 hosts reject the name;
+     * callers must degrade. */
+    hook(
+      name: 'compaction',
+      cb: (event: V2SessionCompactionEvent) => Promise<void>,
+    ): Promise<V2Registration>;
     /** v2 session.get — SessionInfo by id (runtime-probed). */
     get?(input: { sessionID: string }): Promise<unknown>;
+    /** v2 session.create — creates at the supplied native location. Newer
+     * hosts accept caller IDs and operation metadata; callers probe before
+     * use and only send metadata when that capability is known. */
+    create?(input: {
+      id?: string;
+      parentID?: string;
+      agent?: string;
+      model?: { id: string; providerID: string; variant?: string };
+      location?: {
+        directory: string;
+        workspaceID?: string;
+        project: { id: string; directory: string; canonical: string };
+      };
+      metadata?: Record<string, unknown>;
+    }): Promise<unknown>;
     /** v2 session.remove — DELETE /api/session/:id (runtime-probed). */
     remove?(input: { sessionID: string }): Promise<unknown>;
     /** v2 session.list — query-filtered listing (runtime-probed).
@@ -209,6 +250,8 @@ export interface V2Context {
       sessionID: string;
       continue?: boolean;
     }): Promise<unknown>;
+    /** v2 session.wait — resolves only after the native agent loop is idle. */
+    wait?(input: { sessionID: string }): Promise<unknown>;
     /** v2 session.switchModel — v2 prompts carry no model, so a model
      * change must precede the prompt (runtime-probed). */
     switchModel?(input: {

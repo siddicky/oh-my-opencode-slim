@@ -1466,6 +1466,57 @@
         ],
         "additionalProperties": false
       }
+    },
+    "workflows": {
+      "default": {
+        "enabled": false,
+        "roles": {
+          "planner": "oracle",
+          "executor": "fixer",
+          "critic": "oracle",
+          "debugger": "fixer"
+        }
+      },
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "roles": {
+          "default": {
+            "planner": "oracle",
+            "executor": "fixer",
+            "critic": "oracle",
+            "debugger": "fixer"
+          },
+          "type": "object",
+          "properties": {
+            "planner": {
+              "default": "oracle",
+              "type": "string",
+              "minLength": 1
+            },
+            "executor": {
+              "default": "fixer",
+              "type": "string",
+              "minLength": 1
+            },
+            "critic": {
+              "default": "oracle",
+              "type": "string",
+              "minLength": 1
+            },
+            "debugger": {
+              "default": "fixer",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "title": "oh-my-opencode-slim",
